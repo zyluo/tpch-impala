@@ -15,6 +15,6 @@ from
 	part
 where
 	l_partkey = p_partkey
-	and l_shipdate >= date ':1'
-	and l_shipdate < date ':1' + interval '1' month;
+	and l_shipdate >= cast(':1' as timestamp)
+	and l_shipdate < date_add(cast(':1' as timestamp), interval 1 month);
 :n -1

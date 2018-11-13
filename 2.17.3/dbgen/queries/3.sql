@@ -17,8 +17,8 @@ where
 	c_mktsegment = ':1'
 	and c_custkey = o_custkey
 	and l_orderkey = o_orderkey
-	and o_orderdate < date ':2'
-	and l_shipdate > date ':2'
+	and o_orderdate < cast(':2' as timestamp)
+	and l_shipdate > cast(':2' as timestamp)
 group by
 	l_orderkey,
 	o_orderdate,

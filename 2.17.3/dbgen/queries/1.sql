@@ -18,7 +18,7 @@ select
 from
 	lineitem
 where
-	l_shipdate <= date '1998-12-01' - interval ':1' day (3)
+	l_shipdate <= date_sub(cast('1998-12-01' as timestamp), interval :1 day)
 group by
 	l_returnflag,
 	l_linestatus

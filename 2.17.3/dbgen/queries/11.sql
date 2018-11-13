@@ -5,6 +5,9 @@
 :x
 :o
 select
+	*
+from (
+select
 	ps_partkey,
 	sum(ps_supplycost * ps_availqty) as value
 from
@@ -16,8 +19,10 @@ where
 	and s_nationkey = n_nationkey
 	and n_name = ':1'
 group by
-	ps_partkey having
-		sum(ps_supplycost * ps_availqty) > (
+	ps_partkey
+) as innery_query
+	where
+		value > (
 			select
 				sum(ps_supplycost * ps_availqty) * :2
 			from

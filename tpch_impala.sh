@@ -74,6 +74,14 @@ repair.add_argument('-P', dest='procs', type=int, default=3,
 repair.add_argument('filepath', metavar='FILEPATH', nargs='+',
                     help='dumpfile paths')
 
+group = qgen.add_mutually_exclusive_group()
+group.add_argument("-r", "--randseed", type=int,
+                   help='seed the random number generator with <n>')
+group.add_argument("-d", "--dfltsub", action='store_true',
+                   help='use default substitution values')
+qgen.add_argument("queries", metavar="QUERY_NUMBER", nargs='*',
+                  help='query number(s)')
+
 args = parser.parse_args()
 
 def check_hostport(somestring, default_port):
@@ -436,6 +444,45 @@ Repair() {
     echo $var | xargs -n 4 -P ${TPCH_PROCS} sh -c 'KuduRepairTable ${1} ${2} ${3} ${4}' sh
 }
 
+getExecTime() {
+    start=$1
+    end=$2
+    time_s=`echo "scale=3;$(($end-$start))/1000" | bc`
+    echo "Duration: ${time_s} s"
+}
+
+Qgen() {
+    local cnt=0
+    local queries=()
+    local qgen_option=""
+    if [ "${TPCH_DFLTSUB}" = "True" ]
+    then
+        qgen_option="-d"
+    elif [ "${TPCH_RANDSEED}" != "None" ]
+    then
+        qgen_option="-s ${TPCH_RANDSEED}"
+    fi
+    IFS=',' read -r -a impalads <<< "${TPCH_IMPALAD}"
+    if [ -z "${TPCH_QUERIES}" ]
+    then
+        queries=($(seq 22))
+    else
+        IFS=',' read -r -a queries <<< "${TPCH_QUERIES}"
+    fi
+    for query in ${queries[@]}
+    do
+        local tmpfile=$(mktemp)
+        local hostport=${impalads[$((${cnt}%${#impalads[@]}))]}
+        $DBGEN_HOME/qgen ${qgen_option} ${query} | grep -v "^\s*$" | grep -v '^--' | grep -v 'limit -' | tac | sed '0,/;/s///;1i;\' | tac > ${tmpfile}
+        echo 'summary;' | tee -a ${tmpfile} > /dev/null
+        local strt=$(date +%s%3N)
+        impala-shell -p -i ${hostport} -d ${TPCH_DATABASE} -f ${tmpfile}
+        local end=$(date +%s%3N)
+        getExecTime ${strt} ${end}
+        cnt=$((cnt+1))
+    done
+}
+
 logdir=$(dirname ${TPCH_LOGFILE})
 if [ ! -d "${logdir}" ]
 then
@@ -468,6 +515,9 @@ then
 elif [ "${TPCH_COMMAND}" = "repair" ]
 then
     Repair | tee -a ${TPCH_LOGFILE} > /dev/null
+elif [ "${TPCH_COMMAND}" = "qgen" ]
+then
+    Qgen | tee -a ${TPCH_LOGFILE} > /dev/null
 fi
 if [ "${TPCH_VERBOSE}" = "True" ]
 then

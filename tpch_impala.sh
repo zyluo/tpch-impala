@@ -54,8 +54,13 @@ load.add_argument('-D', dest='database', default='tpch',
                   help='Issues a use database command for Impala on startup')
 load.add_argument('-P', dest='procs', type=int, default=6,
                   help='Run up to procs concurrent load processes at a time')
-load.add_argument('-t', dest='tables', action='store_true',
+load.add_argument('-S', dest='schema_refresh', action='store_true',
                   help='drop and create Kudu/Impala tables')
+load.add_argument('-t', dest='table', choices=['lineitem', 'customer',
+                                               'orders', 'part', 'partsupp',
+                                               'supplier', 'nation',
+                                               'region'],
+                  required=True, help='target table name')
 load.add_argument('filedir', metavar='FILEDIR', nargs='+',
                   help='set flat file directory')
 
@@ -161,7 +166,7 @@ Dbgen() {
     -T l -f -q
 }
 
-DropImpalaTables() {
+DropImpalaTable() {
     IFS=',' read -r -a impalads <<< "${TPCH_IMPALAD}"
     local hostport=${impalads[0]}
     local flag=$(impala-shell --quiet -i ${hostport} \
@@ -171,18 +176,12 @@ DropImpalaTables() {
     then
         return
     fi
-    for t in lineitem customer nation orders part partsupp region supplier
-    do
-        impala-shell --quiet -i ${hostport} \
-                     -d ${TPCH_DATABASE} \
-                     -q "drop table if exists ${t}"
-    done
-    impala-shell --quiet -i ${hostport} \
-                 -q "drop database if exists ${TPCH_DATABASE} cascade"
+    impala-shell --quiet -i ${hostport} -d ${TPCH_DATABASE} \
+                 -q "drop table if exists ${TPCH_TABLE}"
 }
 
-DropCreateKuduTables() {
-$(which python) - "kudu_create_table.py" "-m" "${TPCH_KMASTER}" <<END
+DropCreateKuduTable() {
+$(which python) - "kudu_create_table.py" "-m" "${TPCH_KMASTER}" "-t" "${TPCH_TABLE}" <<END
 import argparse
 import sys
 
@@ -199,6 +198,11 @@ parser = argparse.ArgumentParser(description='TPC-H Table Creation Tool '
                                              'for Apache Kudu.')
 parser.add_argument('--masters', '-m', default='127.0.0.1:7051',
                     help='The master address(es) to connect to Kudu.')
+parser.add_argument('-t', dest='table', choices=['lineitem', 'customer',
+                                                 'orders', 'part', 'partsupp',
+                                                 'supplier', 'nation',
+                                                 'region'],
+                    required=True, help='target table name')
 args = parser.parse_args()
 
 kudu_master_hosts = [x.split(':')[0] for x in args.masters.split(',')]
@@ -207,47 +211,45 @@ kudu_master_ports = [x.split(':')[1] for x in args.masters.split(',')]
 # Connect to Kudu master server(s).
 client = kudu.connect(host=kudu_master_hosts, port=kudu_master_ports)
 
-for k, v in kudu_tpch_schema.DDS_DDL.iteritems():
-    # Delete table if it already exists.
-    if client.table_exists(k.lower()):
-        client.delete_table(k.lower())
+k = args.table.upper()
+v = kudu_tpch_schema.DDS_DDL[k]
 
-    pk_column_names = [x[0].lower() for x in v
-                       if x[0] in reduce(lambda x, y: x + y,
-                                         kudu_tpch_schema.DDS_RI[k].values())]
-    builder = kudu.schema_builder()
-    for name, t, n, c, e, bs, d, _ in v:
-        builder.add_column(name.lower(), type_=t, nullable=n, compression=c,
-                           encoding=e) #, block_size=bs, default=d)
-    builder.set_primary_keys(pk_column_names)
-    schema = builder.build()
+# Delete table if it already exists.
+if client.table_exists(k.lower()):
+    client.delete_table(k.lower())
 
-    # Define the partitioning schema.
-    partitioning = Partitioning()
-    for idx, cols in kudu_tpch_schema.DDS_RI[k].iteritems():
-        partitioning.add_hash_partitions(
-            column_names=map(lambda x: x.lower(), cols),
-            num_buckets=kudu_tpch_schema.NUM_BUCKETS[idx])
+pk_column_names = [x[0].lower() for x in v
+                   if x[0] in reduce(lambda x, y: x + y,
+                                     kudu_tpch_schema.DDS_RI[k].values())]
+builder = kudu.schema_builder()
+for name, t, n, c, e, bs, d, _ in v:
+    builder.add_column(name.lower(), type_=t, nullable=n, compression=c,
+                       encoding=e) #, block_size=bs, default=d)
+builder.set_primary_keys(pk_column_names)
+schema = builder.build()
 
-    # Create a new table.
-    client.create_table(k.lower(), schema, partitioning)
+# Define the partitioning schema.
+partitioning = Partitioning()
+for idx, cols in kudu_tpch_schema.DDS_RI[k].iteritems():
+    partitioning.add_hash_partitions(
+        column_names=map(lambda x: x.lower(), cols),
+        num_buckets=kudu_tpch_schema.NUM_BUCKETS[idx])
+
+# Create a new table.
+client.create_table(k.lower(), schema, partitioning)
 END
 }
 
-CreateImpalaTables() {
+CreateImpalaTable() {
     IFS=',' read -r -a impalads <<< "${TPCH_IMPALAD}"
     local hostport=${impalads[0]}
     impala-shell --quiet -i ${hostport} \
                  -q "create database if not exists ${TPCH_DATABASE}"
-    for t in lineitem customer nation orders part partsupp region supplier
-    do
-        impala-shell --quiet -i ${hostport} \
-                     -d ${TPCH_DATABASE} \
-                     -q "create external table ${t} stored as kudu \
-                         tblproperties( \
-                             'kudu.table_name' = '${t}', \
-                             'kudu.master_addresses' = '${TPCH_KMASTER}')"
-    done
+    impala-shell --quiet -i ${hostport} -d ${TPCH_DATABASE} \
+                 -q "create external table ${TPCH_TABLE} stored as kudu \
+                     tblproperties( \
+                         'kudu.table_name' = '${TPCH_TABLE}', \
+                         'kudu.master_addresses' = '${TPCH_KMASTER}')"
 }
 
 KuduPopulateTable() {
@@ -342,7 +344,7 @@ Load() {
     fi
     IFS=',' read -r -a kmasters <<< "${TPCH_KMASTER}"
     IFS=',' read -r -a filedirs <<< "${TPCH_FILEDIR}"
-    for f in $(find ${filedirs[@]} -name "*tbl*" | sort | paste -sd " " -)
+    for f in $(find ${filedirs[@]} -name "${TPCH_TABLE}.tbl*" | sort | paste -sd " " -)
     do
         hostport=${kmasters[$((${cnt}%${#kmasters[@]}))]}
         var+="${hostport} ${flag} ${f} "
@@ -372,11 +374,11 @@ then
     #then
     #    TPCH_IMPALASHELL_OPT="--print_header --verbose --show_profiles"
     #fi
-    if [ "${TPCH_TABLES}" = "True" ]
+    if [ "$TPCH_SCHEMA_REFRESH" = "True" ]
     then
-        DropImpalaTables
-        DropCreateKuduTables
-        CreateImpalaTables
+        DropImpalaTable
+        DropCreateKuduTable
+        CreateImpalaTable
     fi
     Load
     } | tee -a ${TPCH_LOGFILE} > /dev/null

@@ -17,6 +17,21 @@ common.add_argument('-v', '--verbose', action='store_true',
 common.add_argument('-l', '--logfile', default=tempfile.mkstemp()[1],
                     help='set log file')
 
+kudu = argparse.ArgumentParser(add_help=False)
+kudu.add_argument('-k', dest='kmaster', action='append', required=True,
+                  help='The <host:port> of Kudu master address(es)')
+kudu.add_argument('-t', dest='table', choices=['lineitem', 'customer',
+                                               'orders', 'part', 'partsupp',
+                                               'supplier', 'nation',
+                                               'region'],
+                  required=True, help='target table name')
+
+impala = argparse.ArgumentParser(add_help=False)
+impala.add_argument('-i', dest='impalad', action='append', required=True,
+                    help='The <host:port> of impalad address(es)')
+impala.add_argument('-D', dest='database', default='tpch',
+                    help='Issues a use database command for Impala on startup')
+
 parser = argparse.ArgumentParser(description='TPC-H on Apache Impala Tool')
 subparsers = parser.add_subparsers(title='These are common TPC-H commands '
                                          'used in various situations',
@@ -25,10 +40,11 @@ subparsers = parser.add_subparsers(title='These are common TPC-H commands '
 dbgen = subparsers.add_parser('dbgen', parents=[common],
                               help='populate data for use with '
                                    'the TPC-H benchmark')
-load = subparsers.add_parser('load', parents=[common],
+load = subparsers.add_parser('load', parents=[common, kudu, impala],
                              help='load populated data in to Apache Kudu')
-                             
-qgen = subparsers.add_parser('qgen', parents=[common],
+repair = subparsers.add_parser('repair', parents=[common, kudu],
+                               help='repair omitted data in Apache Kudu')
+qgen = subparsers.add_parser('qgen', parents=[common, impala],
                              help='generate queries for use with '
                                   'the TPC-H benchmark')
 
@@ -46,25 +62,25 @@ dbgen.add_argument('-T', dest='tostep', type=int, default=2,
 dbgen.add_argument('filedir', metavar='FILEDIR', nargs='+',
                    help='set flat file directory')
 
-load.add_argument('-k', dest='kmaster', action='append', required=True,
-                  help='The <host:port> of Kudu master address(es)')
-load.add_argument('-i', dest='impalad', action='append', required=True,
-                  help='The <host:port> of impalad address(es)')
-load.add_argument('-D', dest='database', default='tpch',
-                  help='Issues a use database command for Impala on startup')
-load.add_argument('-P', dest='procs', type=int, default=6,
+load.add_argument('-P', dest='procs', type=int, default=3,
                   help='Run up to procs concurrent load processes at a time')
 load.add_argument('-S', dest='schema_refresh', action='store_true',
                   help='drop and create Kudu/Impala tables')
-load.add_argument('-t', dest='table', choices=['lineitem', 'customer',
-                                               'orders', 'part', 'partsupp',
-                                               'supplier', 'nation',
-                                               'region'],
-                  required=True, help='target table name')
 load.add_argument('filedir', metavar='FILEDIR', nargs='+',
                   help='set flat file directory')
 
+repair.add_argument('-P', dest='procs', type=int, default=3,
+                    help='Run up to procs concurrent load processes at a time')
+repair.add_argument('filedir', metavar='FILEDIR', nargs='+',
+                    help='set flat file directory')
+
 args = parser.parse_args()
+
+def check_hostport(somestring, default_port):
+    tokens = somestring.split(':')
+    if len(tokens) < 2:
+        return '%s:%d' % (somestring, default_port)
+    return somestring
 
 if args.command == 'dbgen':
     if args.scalefactor < 1:
@@ -77,22 +93,18 @@ if args.command == 'dbgen':
         raise argparse.ArgumentTypeError('-C must be greater than or equal to 2')
     elif args.tostep > args.chunk:
         args.tostep = args.chunk
-elif args.command == 'load':
 
-    def check_hostport(somestring, default_port):
-        tokens = somestring.split(':')
-        if len(tokens) < 2:
-            return '%s:%d' % (somestring, default_port)
-        return somestring
-
-    args.impalad = map(lambda x: check_hostport(x, 21000), args.impalad)
+if args.command in ['load', 'repair']:
     args.kmaster = map(lambda x: check_hostport(x, 7051), args.kmaster)
-    if len(args.impalad) != len({}.fromkeys(args.impalad).keys()):
-        raise argparse.ArgumentTypeError('duplicate impalads found')
-    elif len(args.kmaster) != len({}.fromkeys(args.kmaster).keys()):
+    if len(args.kmaster) != len({}.fromkeys(args.kmaster).keys()):
         raise argparse.ArgumentTypeError('duplicate kudu masters found')
 
-if args.command in ['dbgen', 'load']:
+if args.command in ['load', 'qgen']:
+    args.impalad = map(lambda x: check_hostport(x, 21000), args.impalad)
+    if len(args.impalad) != len({}.fromkeys(args.impalad).keys()):
+        raise argparse.ArgumentTypeError('duplicate impalads found')
+
+if args.command in ['dbgen', 'load', 'repair']:
     if len(args.filedir) != len({}.fromkeys(args.filedir).keys()):
         raise argparse.ArgumentTypeError('duplicate file paths found')
 
@@ -317,10 +329,7 @@ with open(args.filepath) as f:
         for line in chunk:
             record = map(lambda x: x.strip(), line.split('|'))
             row = [(x[1], convert_value(x[2], record[x[0]])) for x in index]
-            if table_name in ['nation', 'region']:
-                op = table.new_upsert(dict(row))
-            else:
-                op = table.new_insert(dict(row))
+            op = table.new_insert(dict(row))
             session.apply(op)
         try:
             session.flush()
@@ -335,22 +344,140 @@ export -f KuduPopulateTable
 
 Load() {
     local var=""
-    local hostport=""
-    local cnt=0
     local flag="--quiet"
     if [ "${TPCH_VERBOSE}" = "True" ]
     then
         flag="--verbose"
     fi
-    IFS=',' read -r -a kmasters <<< "${TPCH_KMASTER}"
     IFS=',' read -r -a filedirs <<< "${TPCH_FILEDIR}"
     for f in $(find ${filedirs[@]} -name "${TPCH_TABLE}.tbl*" | sort | paste -sd " " -)
     do
-        hostport=${kmasters[$((${cnt}%${#kmasters[@]}))]}
-        var+="${hostport} ${flag} ${f} "
-        cnt=$((cnt+1))
+        var+="${TPCH_KMASTER} ${flag} ${f} "
     done
     echo $var | xargs -n 3 -P ${TPCH_PROCS} sh -c 'KuduPopulateTable ${1} ${2} ${3}' sh
+}
+
+KuduRepairTable() {
+$(which python) - "kudu_repair_table.py" "-m" "${1}" "-F" "${2}" "-T" "${3}" "-L" "${4}" "${5}" "${6}" <<END
+import argparse
+from itertools import islice
+import ntpath
+import sys
+
+import kudu
+
+import kudu_tpch_schema
+
+
+sys.argv = sys.argv[1:]
+
+# Parse arguments
+parser = argparse.ArgumentParser(description='TPC-H Table Population Tool '
+                                             'for Apache Kudu.')
+parser.add_argument('--masters', '-m', default='127.0.0.1:7051',
+                    help='The master address(es) to connect to Kudu.')
+parser.add_argument('--verbose', action='store_true',
+                    help='Verbose output')
+parser.add_argument('--quiet', action='store_true',
+                    help='Disable verbose output')
+parser.add_argument('-F', dest='from_id', type=int,
+                    help='Verbose output')
+parser.add_argument('-T', dest='to_id', type=int,
+                    help='Disable verbose output')
+parser.add_argument('-L', dest='length', type=int,
+                    help='Total number of rows in file')
+parser.add_argument('filepath', metavar='FILEPATH',
+                    help='Text file created by dbgen.')
+args = parser.parse_args()
+print args.filepath
+if not args.filepath.endswith('172'):
+    sys.exit()
+def convert_value(type_, raw_value):
+    if type_ in ['int8', 'int16', 'int32', 'int64']:
+        return int(raw_value)
+    elif type_ == 'float':
+        return float(raw_value)
+    elif type_ == 'unixtime_micros':
+        return '%sT00:00:00.000000' % raw_value
+    else:
+        assert(type_ == 'string')
+        return raw_value
+
+def next_n_lines(file_opened, N):
+    return [x.strip() for x in islice(file_opened, N)]
+
+kudu_master_hosts = [x.split(':')[0] for x in args.masters.split(',')]
+kudu_master_ports = [x.split(':')[1] for x in args.masters.split(',')]
+
+# Connect to Kudu master server(s).
+client = kudu.connect(host=kudu_master_hosts, port=kudu_master_ports,
+                      rpc_timeout_ms=10000)
+
+# Create a new session so that we can apply write operations.
+session = client.new_session()
+
+table_name = ntpath.basename(args.filepath).split('.')[0]
+schema = kudu_tpch_schema.DDS_DDL[table_name.upper()]
+index = [(x[7], x[0].lower(), x[1]) for x in schema]
+first_col = filter(lambda x: x[0] == 0, index)[0][1]
+pk_column_names = [x for x in index
+                   if x[1].upper() in reduce(lambda x, y: x + y,
+                   kudu_tpch_schema.DDS_RI[table_name.upper()].values())]
+
+table = client.table(table_name)
+scanner = table.scanner()
+scanner.add_predicate(table[first_col] >= int(args.from_id))
+scanner.add_predicate(table[first_col] <= int(args.to_id))
+scanner.set_projected_column_indexes(range(len(pk_column_names)))
+results = scanner.open().read_all_tuples()
+
+if args.verbose:
+    print args.filepath, args.from_id, args.to_id, args.length, len(results)
+if len(results) == args.length:
+    sys.exit()
+
+results = map(hash, results)
+
+with open(args.filepath) as f:
+    while True:
+        chunk = next_n_lines(f, 30000)
+        if not chunk:
+            break
+        for line in chunk:
+            record = map(lambda x: x.strip(), line.split('|'))
+            if hash(tuple([convert_value(x[2], record[x[0]]) for x in pk_column_names])) in results:
+                continue
+            if args.verbose:
+                print tuple([convert_value(x[2], record[x[0]]) for x in pk_column_names])
+                print record
+            row = [(x[1], convert_value(x[2], record[x[0]])) for x in index]
+            op = table.new_insert(dict(row))
+            session.apply(op)
+        try:
+            session.flush()
+        except kudu.KuduBadStatus:
+            print(session.get_pending_errors())
+END
+}
+
+export -f KuduRepairTable
+
+Repair() {
+    local var=""
+    local flag="--quiet"
+    if [ "${TPCH_VERBOSE}" = "True" ]
+    then
+        flag="--verbose"
+    fi
+    IFS=',' read -r -a filedirs <<< "${TPCH_FILEDIR}"
+    for f in $(find ${filedirs[@]} -name "${TPCH_TABLE}.tbl*" | sort | paste -sd " " -)
+    do
+        local min=$(head -n 1 ${f} | awk '{split($0,a,"|"); print a[1]}')
+        local max=$(tail -n 1 ${f} | awk '{split($0,a,"|"); print a[1]}')
+        local tot=$(wc -l ${f} | awk '{print $1}')
+        var+="${TPCH_KMASTER} ${min} ${max} ${tot} ${flag} ${f} "
+    done
+    echo $var | xargs -n 6 -P ${TPCH_PROCS} sh -c 'KuduRepairTable ${1} ${2} ${3} ${4} ${5} ${6}' sh
 }
 
 logdir=$(dirname ${TPCH_LOGFILE})
@@ -382,6 +509,9 @@ then
     fi
     Load
     } | tee -a ${TPCH_LOGFILE} > /dev/null
+elif [ "${TPCH_COMMAND}" = "repair" ]
+then
+    Repair | tee -a ${TPCH_LOGFILE} > /dev/null
 fi
 if [ "${TPCH_VERBOSE}" = "True" ]
 then

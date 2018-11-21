@@ -270,6 +270,7 @@ import argparse
 from itertools import islice
 import ntpath
 import sys
+import tempfile
 
 import kudu
 
@@ -326,15 +327,22 @@ with open(args.filepath) as f:
         chunk = next_n_lines(f, 30000)
         if not chunk:
             break
+        rows = []
         for line in chunk:
             record = map(lambda x: x.strip(), line.split('|'))
             row = [(x[1], convert_value(x[2], record[x[0]])) for x in index]
+            rows.append(row)
             op = table.new_insert(dict(row))
             session.apply(op)
         try:
             session.flush()
         except kudu.KuduBadStatus:
-            print(session.get_pending_errors())
+            file_prefix = '%s_' % table_name
+            with tempfile.NamedTemporaryFile(delete=False,
+                                             prefix=file_prefix) as tmp_file:
+                pickle.dump(rows, tmp_file, -1)
+                print tmp_file.name
+        del rows[:]
     if args.verbose:
         print "finish %s" % args.filepath
 END

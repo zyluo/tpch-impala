@@ -71,8 +71,8 @@ load.add_argument('filedir', metavar='FILEDIR', nargs='+',
 
 repair.add_argument('-P', dest='procs', type=int, default=3,
                     help='Run up to procs concurrent load processes at a time')
-repair.add_argument('filedir', metavar='FILEDIR', nargs='+',
-                    help='set flat file directory')
+repair.add_argument('filepath', metavar='FILEPATH', nargs='+',
+                    help='dumpfile paths')
 
 args = parser.parse_args()
 
@@ -104,7 +104,7 @@ if args.command in ['load', 'qgen']:
     if len(args.impalad) != len({}.fromkeys(args.impalad).keys()):
         raise argparse.ArgumentTypeError('duplicate impalads found')
 
-if args.command in ['dbgen', 'load', 'repair']:
+if args.command in ['dbgen', 'load']:
     if len(args.filedir) != len({}.fromkeys(args.filedir).keys()):
         raise argparse.ArgumentTypeError('duplicate file paths found')
 
@@ -268,6 +268,7 @@ KuduPopulateTable() {
 $(which python) - "kudu_populate_table.py" "-m" "${1}" "${2}" "${3}" <<END
 import argparse
 from itertools import islice
+import pickle
 import ntpath
 import sys
 import tempfile
@@ -366,15 +367,12 @@ Load() {
 }
 
 KuduRepairTable() {
-$(which python) - "kudu_repair_table.py" "-m" "${1}" "-F" "${2}" "-T" "${3}" "-L" "${4}" "${5}" "${6}" <<END
+$(which python) - "kudu_repair_table.py" "-m" "${1}" "-t" "${2}" "${3}" "${4}" <<END
 import argparse
-from itertools import islice
-import ntpath
+import pickle
 import sys
 
 import kudu
-
-import kudu_tpch_schema
 
 
 sys.argv = sys.argv[1:]
@@ -388,31 +386,11 @@ parser.add_argument('--verbose', action='store_true',
                     help='Verbose output')
 parser.add_argument('--quiet', action='store_true',
                     help='Disable verbose output')
-parser.add_argument('-F', dest='from_id', type=int,
-                    help='Verbose output')
-parser.add_argument('-T', dest='to_id', type=int,
-                    help='Disable verbose output')
-parser.add_argument('-L', dest='length', type=int,
-                    help='Total number of rows in file')
+parser.add_argument('-t', dest='table',
+                    help='table name')
 parser.add_argument('filepath', metavar='FILEPATH',
-                    help='Text file created by dbgen.')
+                    help='dumpfile path')
 args = parser.parse_args()
-print args.filepath
-if not args.filepath.endswith('172'):
-    sys.exit()
-def convert_value(type_, raw_value):
-    if type_ in ['int8', 'int16', 'int32', 'int64']:
-        return int(raw_value)
-    elif type_ == 'float':
-        return float(raw_value)
-    elif type_ == 'unixtime_micros':
-        return '%sT00:00:00.000000' % raw_value
-    else:
-        assert(type_ == 'string')
-        return raw_value
-
-def next_n_lines(file_opened, N):
-    return [x.strip() for x in islice(file_opened, N)]
 
 kudu_master_hosts = [x.split(':')[0] for x in args.masters.split(',')]
 kudu_master_ports = [x.split(':')[1] for x in args.masters.split(',')]
@@ -424,47 +402,20 @@ client = kudu.connect(host=kudu_master_hosts, port=kudu_master_ports,
 # Create a new session so that we can apply write operations.
 session = client.new_session()
 
-table_name = ntpath.basename(args.filepath).split('.')[0]
-schema = kudu_tpch_schema.DDS_DDL[table_name.upper()]
-index = [(x[7], x[0].lower(), x[1]) for x in schema]
-first_col = filter(lambda x: x[0] == 0, index)[0][1]
-pk_column_names = [x for x in index
-                   if x[1].upper() in reduce(lambda x, y: x + y,
-                   kudu_tpch_schema.DDS_RI[table_name.upper()].values())]
-
-table = client.table(table_name)
-scanner = table.scanner()
-scanner.add_predicate(table[first_col] >= int(args.from_id))
-scanner.add_predicate(table[first_col] <= int(args.to_id))
-scanner.set_projected_column_indexes(range(len(pk_column_names)))
-results = scanner.open().read_all_tuples()
-
-if args.verbose:
-    print args.filepath, args.from_id, args.to_id, args.length, len(results)
-if len(results) == args.length:
-    sys.exit()
-
-results = map(hash, results)
-
-with open(args.filepath) as f:
-    while True:
-        chunk = next_n_lines(f, 30000)
-        if not chunk:
-            break
-        for line in chunk:
-            record = map(lambda x: x.strip(), line.split('|'))
-            if hash(tuple([convert_value(x[2], record[x[0]]) for x in pk_column_names])) in results:
-                continue
-            if args.verbose:
-                print tuple([convert_value(x[2], record[x[0]]) for x in pk_column_names])
-                print record
-            row = [(x[1], convert_value(x[2], record[x[0]])) for x in index]
-            op = table.new_insert(dict(row))
-            session.apply(op)
-        try:
-            session.flush()
-        except kudu.KuduBadStatus:
-            print(session.get_pending_errors())
+table = client.table(args.table)
+with open(args.filepath, 'rb') as f:
+    if args.verbose:
+        print "start %s" % args.filepath
+    rows = pickle.load(f)
+    for row in rows:
+        op = table.new_upsert(dict(row))
+        session.apply(op)
+    try:
+        session.flush()
+    except kudu.KuduBadStatus:
+        print(session.get_pending_errors())
+    if args.verbose:
+        print "finish %s" % args.filepath
 END
 }
 
@@ -477,15 +428,12 @@ Repair() {
     then
         flag="--verbose"
     fi
-    IFS=',' read -r -a filedirs <<< "${TPCH_FILEDIR}"
-    for f in $(find ${filedirs[@]} -name "${TPCH_TABLE}.tbl*" | sort | paste -sd " " -)
+    IFS=',' read -r -a filepaths <<< "${TPCH_FILEPATH}"
+    for f in ${filepaths[@]}
     do
-        local min=$(head -n 1 ${f} | awk '{split($0,a,"|"); print a[1]}')
-        local max=$(tail -n 1 ${f} | awk '{split($0,a,"|"); print a[1]}')
-        local tot=$(wc -l ${f} | awk '{print $1}')
-        var+="${TPCH_KMASTER} ${min} ${max} ${tot} ${flag} ${f} "
+        var+="${TPCH_KMASTER} ${TPCH_TABLE} ${flag} ${f} "
     done
-    echo $var | xargs -n 6 -P ${TPCH_PROCS} sh -c 'KuduRepairTable ${1} ${2} ${3} ${4} ${5} ${6}' sh
+    echo $var | xargs -n 4 -P ${TPCH_PROCS} sh -c 'KuduRepairTable ${1} ${2} ${3} ${4}' sh
 }
 
 logdir=$(dirname ${TPCH_LOGFILE})

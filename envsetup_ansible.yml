@@ -1,0 +1,32 @@
+- hosts: all
+  tasks:
+  - name: Create symbolic links
+    file:
+      src: "{{ item.src }}"
+      dest: "{{ item.dest }}"
+      state: link
+    with_items:
+      - {src: "/opt/cloudera/parcels/CDH/include/kudu", dest: "/usr/include/"}
+      - {src: "/opt/cloudera/parcels/CDH/lib64/libkudu_client.so", dest:  "/usr/lib64/"}
+      - {src: "/opt/cloudera/parcels/CDH/lib64/libkudu_client.so.0", dest:  "/usr/lib64/"}
+      - {src: "/opt/cloudera/parcels/CDH/lib64/libkudu_client.so.0.1.0", dest:  "/usr/lib64/"}
+    become: yes
+
+  - name: Upgrading the pip and setuptools Python Package
+    pip:
+      name: "{{ item.pkg }}"
+      extra_args: --upgrade
+      executable: pip2
+    with_items:
+      - {pkg: pip}
+      - {pkg: setuptools}
+    become: yes
+
+  - name: Installing the cython and kudu-python Python Package
+    pip:
+      name: "{{ item.pkg }}"
+      executable: pip2
+    with_items:
+      - {pkg: cython}
+      - {pkg: kudu-python==1.2.0}
+    become: yes

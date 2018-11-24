@@ -24,7 +24,7 @@ kudu.add_argument('-t', dest='table', choices=['lineitem', 'customer',
                                                'orders', 'part', 'partsupp',
                                                'supplier', 'nation',
                                                'region'],
-                  required=True, help='target table name')
+                  required=True, help='target table name', metavar='TABLE')
 
 impala = argparse.ArgumentParser(add_help=False)
 impala.add_argument('-i', dest='impalad', action='append', required=True,
@@ -40,7 +40,9 @@ subparsers = parser.add_subparsers(title='These are common TPC-H commands '
 dbgen = subparsers.add_parser('dbgen', parents=[common],
                               help='populate data for use with '
                                    'the TPC-H benchmark')
-load = subparsers.add_parser('load', parents=[common, kudu, impala],
+schema = subparsers.add_parser('schema', parents=[common],
+                               help='manipulate TPCH-H databases')
+load = subparsers.add_parser('load', parents=[common, kudu],
                              help='load populated data in to Apache Kudu')
 repair = subparsers.add_parser('repair', parents=[common, kudu],
                                help='repair omitted data in Apache Kudu')
@@ -51,11 +53,18 @@ throughput = subparsers.add_parser('throughput', parents=[common, impala],
                                    help='generate TPC-H benchmark throughput '
                                         'test queries')
 
+schema_sub = schema.add_subparsers(title='These are common schema commands '
+                                   'used in various situations',
+                                   dest='schema_command', metavar='')
+create_schema = schema_sub.add_parser('create', parents=[common, kudu, impala],
+                                      help='create a TPC-H database')
+delete_schema = schema_sub.add_parser('delete', parents=[common, kudu, impala],
+                                      help='delete a TPC-H database')
+
 dbgen.add_argument('-s', dest='scalefactor', type=int, default=1,
                   help='set Scale Factor (SF) to <n> (default: 1)')
 dbgen.add_argument('-C', dest='chunk', type=int, default=2,
-                   help='separate data set into <n> chunks '
-                        '(requires -S, default: 1)')
+                   help='separate data set into <n> chunks (default: 2)')
 dbgen.add_argument('-F', dest='fromstep', type=int, default=1,
                    help='build starting from the <n>th step of the data set '
                         '(used with -C)')
@@ -67,8 +76,6 @@ dbgen.add_argument('filedir', metavar='FILEDIR', nargs='+',
 
 load.add_argument('-P', dest='procs', type=int, default=3,
                   help='Run up to procs concurrent load processes at a time')
-load.add_argument('-S', dest='schema_refresh', action='store_true',
-                  help='drop and create Kudu/Impala tables')
 load.add_argument('filedir', metavar='FILEDIR', nargs='+',
                   help='set flat file directory')
 
@@ -110,12 +117,12 @@ if args.command == 'dbgen':
     elif args.tostep > args.chunk:
         args.tostep = args.chunk
 
-if args.command in ['load', 'repair']:
+if args.command in ['schema', 'load', 'repair']:
     args.kmaster = map(lambda x: check_hostport(x, 7051), args.kmaster)
     if len(args.kmaster) != len({}.fromkeys(args.kmaster).keys()):
         raise argparse.ArgumentTypeError('duplicate kudu masters found')
 
-if args.command in ['load', 'qgen']:
+if args.command in ['schema', 'load', 'qgen']:
     args.impalad = map(lambda x: check_hostport(x, 21000), args.impalad)
     if len(args.impalad) != len({}.fromkeys(args.impalad).keys()):
         raise argparse.ArgumentTypeError('duplicate impalads found')
@@ -134,7 +141,12 @@ with open(args.source, 'w') as f:
         f.write('TPCH_%s="%s"\n' % (arg.upper(), val))
 END
 
-source ${TPCH_SOURCEFILE}
+if [[ -s ${TPCH_SOURCEFILE} ]]
+then
+    source ${TPCH_SOURCEFILE}
+else
+    exit 0
+fi
 
 DBGEN_HOME=2.17.3/dbgen
 export DSS_CONFIG=${DBGEN_HOME}
@@ -208,7 +220,44 @@ DropImpalaTable() {
                  -q "drop table if exists ${TPCH_TABLE}"
 }
 
-DropCreateKuduTable() {
+DropKuduTable() {
+$(which python) - "kudu_drop_table.py" "-m" "${TPCH_KMASTER}" "-t" "${TPCH_TABLE}" <<END
+import argparse
+import sys
+
+import kudu
+from kudu.client import Partitioning
+
+from kudu_tpch import kudu_tpch_schema
+
+
+sys.argv = sys.argv[1:]
+
+# Parse arguments
+parser = argparse.ArgumentParser(description='TPC-H Table Creation Tool '
+                                             'for Apache Kudu.')
+parser.add_argument('--masters', '-m', default='127.0.0.1:7051',
+                    help='The master address(es) to connect to Kudu.')
+parser.add_argument('-t', dest='table', choices=['lineitem', 'customer',
+                                                 'orders', 'part', 'partsupp',
+                                                 'supplier', 'nation',
+                                                 'region'],
+                    required=True, help='target table name')
+args = parser.parse_args()
+
+kudu_master_hosts = [x.split(':')[0] for x in args.masters.split(',')]
+kudu_master_ports = [x.split(':')[1] for x in args.masters.split(',')]
+
+# Connect to Kudu master server(s).
+client = kudu.connect(host=kudu_master_hosts, port=kudu_master_ports)
+
+# Delete table if exists.
+if client.table_exists(args.table):
+    client.delete_table(args.table)
+END
+}
+
+CreateKuduTable() {
 $(which python) - "kudu_create_table.py" "-m" "${TPCH_KMASTER}" "-t" "${TPCH_TABLE}" <<END
 import argparse
 import sys
@@ -545,20 +594,28 @@ then
     touch ${TPCH_LOGFILE} 2>/dev/null || { echo "${TPCH_LOGFILE} permission denied" >&2; exit 1; }
 fi
 
+if [ "${TPCH_VERBOSE}" = "True" ]
+then
+    echo ${TPCH_LOGFILE}
+fi
+
 if [ "${TPCH_COMMAND}" = "dbgen" ]
 then
     Dbgen
-elif [ "${TPCH_COMMAND}" = "load" ]
+elif [ "${TPCH_COMMAND}" = "schema" ]
 then
-    {
-    if [ "$TPCH_SCHEMA_REFRESH" = "True" ]
+    if [ "${TPCH_SCHEMA_COMMAND}" = "create" ]
+    then
+        CreateKuduTable
+        CreateImpalaTable
+    elif [ "${TPCH_SCHEMA_COMMAND}" = "delete" ]
     then
         DropImpalaTable
-        DropCreateKuduTable
-        CreateImpalaTable
+        DropKuduTable
     fi
-    Load
-    } | tee -a ${TPCH_LOGFILE} > /dev/null
+elif [ "${TPCH_COMMAND}" = "load" ]
+then
+    Load | tee -a ${TPCH_LOGFILE} > /dev/null
 elif [ "${TPCH_COMMAND}" = "repair" ]
 then
     Repair | tee -a ${TPCH_LOGFILE} > /dev/null
@@ -568,8 +625,4 @@ then
 elif [ "${TPCH_COMMAND}" = "throughput" ]
 then
     Qgen2 | tee -a ${TPCH_LOGFILE} > /dev/null
-fi
-if [ "${TPCH_VERBOSE}" = "True" ]
-then
-    echo ${TPCH_LOGFILE}
 fi

@@ -150,16 +150,24 @@ DDS_RI = {
         ],
     },
     'LINEITEM': {
-        'LINEITEM_PK': [
+        #'LINEITEM_PK': [
+        #    'L_ORDERKEY',
+        #    'L_LINENUMBER',
+        #],
+        'LINEITEM_FK1': [
             'L_ORDERKEY',
+        ],
+        #'LINEITEM_FK2': [
+        #    'L_PARTKEY',
+        #    'L_SUPPKEY',
+        #],
+        'CUSTOM_FK1': [
             'L_LINENUMBER',
         ],
-        # skip hash bucket schema components that contain columns in common
-        #'LINEITEM_FK1': [
-        #    'L_ORDERKEY',
-        #],
-        'LINEITEM_FK2': [
+        'CUSTOM_FK2': [
             'L_PARTKEY',
+        ],
+        'CUSTOM_FK3': [
             'L_SUPPKEY',
         ],
     },
@@ -186,9 +194,12 @@ NUM_BUCKETS = {
     'PARTSUPP_FK2': 37,
     'CUSTOMER_PK': 13,
     'CUSTOMER_FK1': 5,
-    'LINEITEM_PK': 37,
-    'LINEITEM_FK1': None,
-    'LINEITEM_FK2': 3,
+    'LINEITEM_PK': None,
+    'LINEITEM_FK1': 5,
+    'LINEITEM_FK2': None,
+    'CUSTOM_FK1': 2,
+    'CUSTOM_FK2': 5,
+    'CUSTOM_FK3': 2,
     'ORDERS_PK': 43,
     'ORDERS_FK1': 2,
 }

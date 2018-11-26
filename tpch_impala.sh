@@ -208,7 +208,7 @@ import sys
 import kudu
 from kudu.client import Partitioning
 
-import kudu_tpch_schema
+from kudu_tpch import kudu_tpch_schema
 
 
 sys.argv = sys.argv[1:]
@@ -283,7 +283,7 @@ import tempfile
 
 import kudu
 
-import kudu_tpch_schema
+from kudu_tpch import kudu_tpch_schema
 
 
 sys.argv = sys.argv[1:]

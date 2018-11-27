@@ -453,6 +453,11 @@ Qgen() {
     local cnt=0
     local queries=()
     local qgen_option=""
+    local impala_option="--quiet"
+    if [ "$TPCH_VERBOSE" = "True" ]
+    then
+        impala_option="--print_header --verbose --show_profiles"
+    fi
     if [ "${TPCH_DFLTSUB}" = "True" ]
     then
         qgen_option="-d"
@@ -474,7 +479,7 @@ Qgen() {
         $DBGEN_HOME/qgen ${qgen_option} ${query} | grep -v "^\s*$" | grep -v '^--' | grep -v 'limit -' | tac | sed '0,/;/s///;1i;\' | tac > ${tmpfile}
         echo 'summary;' | tee -a ${tmpfile} > /dev/null
         local strt=$(date +%s%3N)
-        impala-shell -p -i ${hostport} -d ${TPCH_DATABASE} -f ${tmpfile}
+        impala-shell ${impala_option} -i ${hostport} -d ${TPCH_DATABASE} -f ${tmpfile}
         local end=$(date +%s%3N)
         getExecTime ${strt} ${end}
         cnt=$((cnt+1))
@@ -497,11 +502,6 @@ then
 elif [ "${TPCH_COMMAND}" = "load" ]
 then
     {
-    #TPCH_IMPALASHELL_OPT="--quiet"
-    #if [ "$TPCH_VERBOSE" = "True" ]
-    #then
-    #    TPCH_IMPALASHELL_OPT="--print_header --verbose --show_profiles"
-    #fi
     if [ "$TPCH_SCHEMA_REFRESH" = "True" ]
     then
         DropImpalaTable

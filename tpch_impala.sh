@@ -322,7 +322,7 @@ kudu_master_ports = [x.split(':')[1] for x in args.masters.split(',')]
 client = kudu.connect(host=kudu_master_hosts, port=kudu_master_ports)
 
 # Create a new session so that we can apply write operations.
-session = client.new_session(timeout_ms=10000)
+session = client.new_session(timeout_ms=60000)
 
 table_name = ntpath.basename(args.filepath).split('.')[0]
 schema = kudu_tpch_schema.DDS_DDL[table_name.upper()]
@@ -406,7 +406,7 @@ kudu_master_ports = [x.split(':')[1] for x in args.masters.split(',')]
 client = kudu.connect(host=kudu_master_hosts, port=kudu_master_ports)
 
 # Create a new session so that we can apply write operations.
-session = client.new_session(timeout_ms=10000)
+session = client.new_session(timeout_ms=60000)
 
 table = client.table(args.table)
 with open(args.filepath, 'rb') as f:

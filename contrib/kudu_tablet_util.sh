@@ -74,66 +74,61 @@ END
 source ${TPCH_SOURCEFILE}
 
 GetTsUuid () {
-    echo $(sed -e 's/^"//' -e 's/"$//' <<< $(kudu tserver status ${1} | grep uuid | awk '{print $2}'))
+    sed -e 's/^"//' -e 's/"$//' <<< $(kudu tserver status ${1} | grep uuid | awk '{print $2}')
 }
 
-GetTabletsOnTserver() {
-    echo $(kudu remote_replica list ${1} | pcregrep -M -B 1 "RUNNING\nTable name: ${TPCH_TABLE}$" | grep "Tablet id:" | awk '{print $3}' | paste -sd " " -)
+GetTabletsByTable () {
+    if [[ -z "${TPCH_TABLE}" ]]
+    then
+        kudu remote_replica list ${1} | grep -B 1 -A 3 "State: RUNNING"
+    else
+        kudu remote_replica list ${1} | pcregrep -M -B 1 -A 2 "State: RUNNING\nTable name: ${TPCH_TABLE}$"
+    fi
+}
+
+GetTabletUUIDsByTable () {
+    GetTabletsByTable ${1} | grep "Tablet id:" | awk '{print $3}'
+}
+
+MoveTablets () {
+    local from_ts_uuid=$(GetTsUuid ${TPCH_FROM_TS_ADDR})
+    local to_ts_uuid=$(GetTsUuid ${TPCH_TO_TS_ADDR})
+    IFS=',' read -r -a uuids <<< "${1}"
+    for uuid in ${uuids[@]}
+    do
+        if [ "${TPCH_VERBOSE}" = "True" ]
+        then
+            echo "$(date) INFO Move ${uuid} from ${TPCH_FROM_TS_ADDR}(${from_ts_uuid}) to ${TPCH_TO_TS_ADDR}(${to_ts_uuid})"
+            echo "$(date) INFO $(GetTabletsByTable ${TPCH_FROM_TS_ADDR} | grep -A 4 ${uuid} | paste -sd " " -)"
+        fi
+        kudu tablet change_config move_replica ${TPCH_TM_ADDR} ${uuid} ${from_ts_uuid} ${to_ts_uuid}
+        if [ "${TPCH_VERBOSE}" = "True" ]
+        then
+            echo "$(date) INFO Done ${uuid}"
+        fi
+    done
 }
 
 if [ "${TPCH_COMMAND}" = "list" ]
 then
     if [ "${TPCH_VERBOSE}" = "True" ]
     then
-        kudu remote_replica list ${TPCH_TS_ADDR} | pcregrep -M -B 1 -A 2 "RUNNING\nTable name: ${TPCH_TABLE}$"
+        GetTabletsByTable ${TPCH_TS_ADDR}
     else
-        kudu remote_replica list ${TPCH_TS_ADDR} | pcregrep -M -B 1 "RUNNING\nTable name: ${TPCH_TABLE}$" | grep "Tablet id:" | awk '{print $3}'
+        GetTabletUUIDsByTable ${TPCH_TS_ADDR}
     fi
 elif [ "${TPCH_COMMAND}" = "move" ]
 then
-    from_ts_uuid=$(GetTsUuid ${TPCH_FROM_TS_ADDR})
-    to_ts_uuid=$(GetTsUuid ${TPCH_TO_TS_ADDR})
-    IFS=',' read -r -a uuids <<< "${TPCH_TABLET_UUID}"
-    for uuid in ${uuids[@]}
-    do
-        if [ "${TPCH_VERBOSE}" = "True" ]
-        then
-            echo "$(date) INFO Move ${uuid} from ${TPCH_FROM_TS_ADDR}(${from_ts_uuid}) to ${TPCH_TO_TS_ADDR}(${to_ts_uuid})"
-            echo "$(date) INFO $(kudu remote_replica list ${TPCH_FROM_TS_ADDR} | pcregrep -M -A 3 "${uuid}\nState: RUNNING" | paste -sd " " -)"
-        fi
-        kudu tablet change_config move_replica ${TPCH_TM_ADDR} ${uuid} ${from_ts_uuid} ${to_ts_uuid}
-        if [ "${TPCH_VERBOSE}" = "True" ]
-        then
-            echo "$(date) INFO Done ${uuid}"
-        fi
-    done
-
+    MoveTablets ${TPCH_TABLET_UUID}
 elif [ "${TPCH_COMMAND}" = "automove" ]
 then
-    src_tablets=$(GetTabletsOnTserver ${TPCH_FROM_TS_ADDR})
-    IFS=' ' read -r -a dst_tablets <<< "$(GetTabletsOnTserver ${TPCH_TO_TS_ADDR})"
+    src_tablets=$(GetTabletUUIDsByTable ${TPCH_FROM_TS_ADDR} | paste -sd " " -)
+    dst_tablets=( $(GetTabletUUIDsByTable ${TPCH_TO_TS_ADDR} | paste -sd " " -) )
     for uuid in ${dst_tablets[@]}
     do
        src_tablets=${src_tablets//$uuid}
     done
-    IFS=' ' read -r -a complements <<< "${src_tablets}"
-    complements=( $(shuf -e "${complements[@]}") )
-    candidates=$(echo ${complements[@]:0:${TPCH_THIS_MANY_TABLETS}})
-
-    from_ts_uuid=$(GetTsUuid ${TPCH_FROM_TS_ADDR})
-    to_ts_uuid=$(GetTsUuid ${TPCH_TO_TS_ADDR})
-    IFS=' ' read -r -a uuids <<< "${candidates}"
-    for uuid in ${uuids[@]}
-    do
-        if [ "${TPCH_VERBOSE}" = "True" ]
-        then
-            echo "$(date) INFO Move ${uuid} from ${TPCH_FROM_TS_ADDR}(${from_ts_uuid}) to ${TPCH_TO_TS_ADDR}(${to_ts_uuid})"
-            echo "$(date) INFO $(kudu remote_replica list ${TPCH_FROM_TS_ADDR} | pcregrep -M -A 3 "${uuid}\nState: RUNNING" | paste -sd " " -)"
-        fi
-        kudu tablet change_config move_replica ${TPCH_TM_ADDR} ${uuid} ${from_ts_uuid} ${to_ts_uuid}
-        if [ "${TPCH_VERBOSE}" = "True" ]
-        then
-            echo "$(date) INFO Done ${uuid}"
-        fi
-    done
+    complements=( ${src_tablets} )
+    todays_dose=( $(shuf -e -n ${TPCH_THIS_MANY_TABLETS} ${complements[@]}) )
+    MoveTablets $(IFS=','; echo "${todays_dose[*]}")
 fi

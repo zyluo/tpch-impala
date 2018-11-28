@@ -28,5 +28,5 @@
       executable: pip2
     with_items:
       - {pkg: cython}
-      - {pkg: kudu-python==1.2.0}
+      - {pkg: kudu-python==1.8.0}
     become: yes

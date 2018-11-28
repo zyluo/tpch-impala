@@ -6,10 +6,10 @@
       dest: "{{ item.dest }}"
       state: link
     with_items:
-      - {src: "/opt/cloudera/parcels/CDH/include/kudu", dest: "/usr/include/"}
-      - {src: "/opt/cloudera/parcels/CDH/lib64/libkudu_client.so", dest:  "/usr/lib64/"}
-      - {src: "/opt/cloudera/parcels/CDH/lib64/libkudu_client.so.0", dest:  "/usr/lib64/"}
-      - {src: "/opt/cloudera/parcels/CDH/lib64/libkudu_client.so.0.1.0", dest:  "/usr/lib64/"}
+      - {src: "/opt/cloudera/parcels/CDH/include/kudu", dest: "/usr/include/kudu"}
+      - {src: "/opt/cloudera/parcels/CDH/lib64/libkudu_client.so", dest:  "/usr/lib64/libkudu_client.so"}
+      - {src: "/opt/cloudera/parcels/CDH/lib64/libkudu_client.so.0", dest:  "/usr/lib64/libkudu_client.so.0"}
+      - {src: "/opt/cloudera/parcels/CDH/lib64/libkudu_client.so.0.1.0", dest:  "/usr/lib64/libkudu_client.so.0.1.0"}
     become: yes
 
   - name: Upgrading the pip and setuptools Python Package

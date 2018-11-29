@@ -25,6 +25,10 @@ kudu.add_argument('-t', dest='table', choices=['lineitem', 'customer',
                                                'supplier', 'nation',
                                                'region'],
                   required=True, help='target table name')
+kudu.add_argument('--timeout_ms', dest='session_timeout', type=int,
+                  help='')
+kudu.add_argument('--buffer_sz', dest='session_buffsize', type=int
+                  help='')
 
 impala = argparse.ArgumentParser(add_help=False)
 impala.add_argument('-i', dest='impalad', action='append', required=True,
@@ -322,7 +326,9 @@ kudu_master_ports = [x.split(':')[1] for x in args.masters.split(',')]
 client = kudu.connect(host=kudu_master_hosts, port=kudu_master_ports)
 
 # Create a new session so that we can apply write operations.
-session = client.new_session(timeout_ms=60000)
+session = client.new_session(timeout_ms=args.session_timeout,
+                             mutation_buffer_sz=args.session_buffsize,
+                             mutation_buffer_max_num=0)
 
 table_name = ntpath.basename(args.filepath).split('.')[0]
 schema = kudu_tpch_schema.DDS_DDL[table_name.upper()]
@@ -406,7 +412,9 @@ kudu_master_ports = [x.split(':')[1] for x in args.masters.split(',')]
 client = kudu.connect(host=kudu_master_hosts, port=kudu_master_ports)
 
 # Create a new session so that we can apply write operations.
-session = client.new_session(timeout_ms=60000)
+session = client.new_session(timeout_ms=args.to,
+                             mutation_buffer_sz=args.bs,
+                             mutation_buffer_max_num=0)
 
 table = client.table(args.table)
 with open(args.filepath, 'rb') as f:

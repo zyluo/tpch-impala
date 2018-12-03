@@ -256,7 +256,7 @@ for idx, cols in kudu_tpch_schema.DDS_RI[k].iteritems():
         num_buckets=kudu_tpch_schema.NUM_BUCKETS[idx])
 
 # Create a new table.
-client.create_table(k.lower(), schema, partitioning)
+client.create_table(k.lower(), schema, partitioning, n_replicas=3)
 END
 }
 

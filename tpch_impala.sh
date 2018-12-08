@@ -42,8 +42,6 @@ dbgen = subparsers.add_parser('dbgen', parents=[common],
                                    'the TPC-H benchmark')
 load = subparsers.add_parser('load', parents=[common, kudu, impala],
                              help='load populated data in to Apache Kudu')
-repair = subparsers.add_parser('repair', parents=[common, kudu],
-                               help='repair omitted data in Apache Kudu')
 qgen = subparsers.add_parser('qgen', parents=[common, impala],
                              help='generate queries for use with '
                                   'the TPC-H benchmark')
@@ -68,11 +66,6 @@ load.add_argument('-S', dest='schema_refresh', action='store_true',
                   help='drop and create Kudu/Impala tables')
 load.add_argument('filedir', metavar='FILEDIR', nargs='+',
                   help='set flat file directory')
-
-repair.add_argument('-P', dest='procs', type=int, default=3,
-                    help='Run up to procs concurrent load processes at a time')
-repair.add_argument('filepath', metavar='FILEPATH', nargs='+',
-                    help='dumpfile paths')
 
 group = qgen.add_mutually_exclusive_group()
 group.add_argument("-r", "--randseed", type=int,
@@ -102,7 +95,7 @@ if args.command == 'dbgen':
     elif args.tostep > args.chunk:
         args.tostep = args.chunk
 
-if args.command in ['load', 'repair']:
+if args.command in ['load']:
     args.kmaster = map(lambda x: check_hostport(x, 7051), args.kmaster)
     if len(args.kmaster) != len({}.fromkeys(args.kmaster).keys()):
         raise argparse.ArgumentTypeError('duplicate kudu masters found')
@@ -373,75 +366,6 @@ Load() {
     echo $var | xargs -n 3 -P ${TPCH_PROCS} sh -c 'KuduPopulateTable ${1} ${2} ${3}' sh
 }
 
-KuduRepairTable() {
-$(which python) - "kudu_repair_table.py" "-m" "${1}" "-t" "${2}" "${3}" "${4}" <<END
-import argparse
-import pickle
-import sys
-
-import kudu
-
-
-sys.argv = sys.argv[1:]
-
-# Parse arguments
-parser = argparse.ArgumentParser(description='TPC-H Table Population Tool '
-                                             'for Apache Kudu.')
-parser.add_argument('--masters', '-m', default='127.0.0.1:7051',
-                    help='The master address(es) to connect to Kudu.')
-parser.add_argument('--verbose', action='store_true',
-                    help='Verbose output')
-parser.add_argument('--quiet', action='store_true',
-                    help='Disable verbose output')
-parser.add_argument('-t', dest='table',
-                    help='table name')
-parser.add_argument('filepath', metavar='FILEPATH',
-                    help='dumpfile path')
-args = parser.parse_args()
-
-kudu_master_hosts = [x.split(':')[0] for x in args.masters.split(',')]
-kudu_master_ports = [x.split(':')[1] for x in args.masters.split(',')]
-
-# Connect to Kudu master server(s).
-client = kudu.connect(host=kudu_master_hosts, port=kudu_master_ports)
-
-# Create a new session so that we can apply write operations.
-session = client.new_session(timeout_ms=60000)
-
-table = client.table(args.table)
-with open(args.filepath, 'rb') as f:
-    if args.verbose:
-        print "start %s" % args.filepath
-    rows = pickle.load(f)
-    for row in rows:
-        op = table.new_upsert(dict(row))
-        session.apply(op)
-    try:
-        session.flush()
-    except kudu.KuduBadStatus:
-        print(session.get_pending_errors())
-    if args.verbose:
-        print "finish %s" % args.filepath
-END
-}
-
-export -f KuduRepairTable
-
-Repair() {
-    local var=""
-    local flag="--quiet"
-    if [ "${TPCH_VERBOSE}" = "True" ]
-    then
-        flag="--verbose"
-    fi
-    IFS=',' read -r -a filepaths <<< "${TPCH_FILEPATH}"
-    for f in ${filepaths[@]}
-    do
-        var+="${TPCH_KMASTER} ${TPCH_TABLE} ${flag} ${f} "
-    done
-    echo $var | xargs -n 4 -P ${TPCH_PROCS} sh -c 'KuduRepairTable ${1} ${2} ${3} ${4}' sh
-}
-
 getExecTime() {
     start=$1
     end=$2
@@ -510,9 +434,6 @@ then
     fi
     Load
     } | tee -a ${TPCH_LOGFILE} > /dev/null
-elif [ "${TPCH_COMMAND}" = "repair" ]
-then
-    Repair | tee -a ${TPCH_LOGFILE} > /dev/null
 elif [ "${TPCH_COMMAND}" = "qgen" ]
 then
     Qgen | tee -a ${TPCH_LOGFILE} > /dev/null

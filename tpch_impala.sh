@@ -479,7 +479,9 @@ Qgen() {
         $DBGEN_HOME/qgen ${qgen_option} ${query} | grep -v "^\s*$" | grep -v '^--' | grep -v 'limit -' | tac | sed '0,/;/s///;1i;\' | tac > ${tmpfile}
         echo 'summary;' | tee -a ${tmpfile} > /dev/null
         local strt=$(date +%s%3N)
-        impala-shell ${impala_option} -i ${hostport} -d ${TPCH_DATABASE} -f ${tmpfile}
+        local configfile=conf/q"$(printf '%02d' ${query})"_options.sql
+        cat ${configfile}
+        impala-shell ${impala_option} -i ${hostport} -d ${TPCH_DATABASE} --config_file=${configfile} -f ${tmpfile}
         local end=$(date +%s%3N)
         getExecTime ${strt} ${end}
         cnt=$((cnt+1))

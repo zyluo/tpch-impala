@@ -45,8 +45,11 @@ load = subparsers.add_parser('load', parents=[common, kudu, impala],
 repair = subparsers.add_parser('repair', parents=[common, kudu],
                                help='repair omitted data in Apache Kudu')
 qgen = subparsers.add_parser('qgen', parents=[common, impala],
-                             help='generate queries for use with '
-                                  'the TPC-H benchmark')
+                             help='generate TPC-H benchmark power test '
+                                  'queries')
+throughput = subparsers.add_parser('throughput', parents=[common, impala],
+                                   help='generate TPC-H benchmark throughput '
+                                        'test queries')
 
 dbgen.add_argument('-s', dest='scalefactor', type=int, default=1,
                   help='set Scale Factor (SF) to <n> (default: 1)')
@@ -81,6 +84,11 @@ group.add_argument("-d", "--dfltsub", action='store_true',
                    help='use default substitution values')
 qgen.add_argument("queries", metavar="QUERY_NUMBER", nargs='*',
                   help='query number(s)')
+
+throughput.add_argument("n_stream", metavar="N_STREAM", type=int,
+                        help='number of streams')
+throughput.add_argument("mem_limit", metavar="MEM_LIMIT", type=int,
+                        help='mem limit size in GB')
 
 args = parser.parse_args()
 
@@ -443,9 +451,9 @@ Repair() {
 }
 
 getExecTime() {
-    start=$1
-    end=$2
-    time_s=`echo "scale=3;$(($end-$start))/1000" | bc`
+    local start=$1
+    local finish=$2
+    time_s=`echo "scale=3;$(($finish-$start))/1000" | bc`
     echo "Duration: ${time_s} s"
 }
 
@@ -488,6 +496,45 @@ Qgen() {
     done
 }
 
+RunQuery() {
+    local qgen_option="-d"
+    local impala_option="--quiet"
+    local tmpfile=$(mktemp)
+    ${1}/qgen ${qgen_option} -p ${4} ${5} | grep -v "^\s*$" | grep -v '^--' | grep -v 'limit -' | tac | sed '0,/;/s///;1i;\' | tac > ${tmpfile}
+    impala-shell ${impala_option} -i ${2} -d ${3} --query_option="MEM_LIMIT=${6}g" -f ${tmpfile} | tee -a ${7}.stream.${4} > /dev/null
+}
+
+export -f RunQuery
+
+Qgen2() {
+    local var=""
+    local cnt=0
+    #local qgen_option=""
+    #if [ "${TPCH_DFLTSUB}" = "True" ]
+    #then
+    #    qgen_option="-d"
+    #elif [ "${TPCH_RANDSEED}" != "None" ]
+    #then
+    #    qgen_option="-s ${TPCH_RANDSEED}"
+    #fi
+    IFS=',' read -r -a impalads <<< "${TPCH_IMPALAD}"
+    for query in {1..22}
+    do
+        for stream in $(seq ${TPCH_N_STREAM})
+        do
+            local hostport=${impalads[$((${cnt}%${#impalads[@]}))]}
+            var+="${DBGEN_HOME} ${hostport} ${TPCH_DATABASE} ${stream} ${query} ${TPCH_MEM_LIMIT} ${TPCH_LOGFILE} "
+            cnt=$((cnt+1))
+        done
+    done
+    local strt=$(date +"%D %T.%3N")
+    echo $var | xargs -n 7 -P ${TPCH_N_STREAM} sh -c 'RunQuery ${1} ${2} ${3} ${4} ${5} ${6} ${7}' sh
+    local end=$(date +"%D %T.%3N")
+    getExecTime $(date -d "${strt}" +%s%3N) $(date -d "${end}" +%s%3N)
+    echo ${strt}
+    echo ${end}
+}
+
 logdir=$(dirname ${TPCH_LOGFILE})
 if [ ! -d "${logdir}" ]
 then
@@ -518,6 +565,9 @@ then
 elif [ "${TPCH_COMMAND}" = "qgen" ]
 then
     Qgen | tee -a ${TPCH_LOGFILE} > /dev/null
+elif [ "${TPCH_COMMAND}" = "throughput" ]
+then
+    Qgen2 | tee -a ${TPCH_LOGFILE} > /dev/null
 fi
 if [ "${TPCH_VERBOSE}" = "True" ]
 then

@@ -378,7 +378,12 @@ Load() {
     do
         var+="${TPCH_KMASTER} ${flag} ${f} "
     done
+    local strt=$(date +"%D %T.%3N")
     echo $var | xargs -n 3 -P ${TPCH_PROCS} sh -c 'KuduPopulateTable ${1} ${2} ${3}' sh
+    local end=$(date +"%D %T.%3N")
+    getExecTime $(date -d "${strt}" +%s%3N) $(date -d "${end}" +%s%3N)
+    echo ${strt}
+    echo ${end}
 }
 
 KuduRepairTable() {

@@ -24,7 +24,7 @@ kudu.add_argument('-t', dest='table', choices=['lineitem', 'customer',
                                                'orders', 'part', 'partsupp',
                                                'supplier', 'nation',
                                                'region'],
-                  required=True, help='target table name')
+                  action='append', required=True, help='target table name')
 
 impala = argparse.ArgumentParser(add_help=False)
 impala.add_argument('-i', dest='impalad', action='append', required=True,
@@ -374,9 +374,13 @@ Load() {
         flag="--verbose"
     fi
     IFS=',' read -r -a filedirs <<< "${TPCH_FILEDIR}"
-    for f in $(find ${filedirs[@]} -name "${TPCH_TABLE}.tbl*" | sort | paste -sd " " -)
+    IFS=',' read -r -a tables <<< "${TPCH_TABLE}"
+    for t in ${tables[@]}
     do
-        var+="${TPCH_KMASTER} ${flag} ${f} "
+        for f in $(find ${filedirs[@]} -name "${t}.tbl*" | sed 's|\(.*\)\.|\1@|' | sort -n -t@ -k+2 | sed 's|@|\.|')
+        do
+            var+="${TPCH_KMASTER} ${flag} ${f} "
+        done
     done
     local strt=$(date +"%D %T.%3N")
     echo $var | xargs -n 3 -P ${TPCH_PROCS} sh -c 'KuduPopulateTable ${1} ${2} ${3}' sh

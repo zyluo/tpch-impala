@@ -204,8 +204,12 @@ DropImpalaTable() {
     then
         return
     fi
-    impala-shell --quiet -i ${hostport} -d ${TPCH_DATABASE} \
-                 -q "drop table if exists ${TPCH_TABLE}"
+    IFS=',' read -r -a tables <<< "${TPCH_TABLE}"
+    for t in ${tables[@]}
+    do
+        impala-shell --quiet -i ${hostport} -d ${TPCH_DATABASE} \
+                     -q "drop table if exists ${t}"
+    done
 }
 
 DropCreateKuduTable() {
@@ -226,11 +230,8 @@ parser = argparse.ArgumentParser(description='TPC-H Table Creation Tool '
                                              'for Apache Kudu.')
 parser.add_argument('--masters', '-m', default='127.0.0.1:7051',
                     help='The master address(es) to connect to Kudu.')
-parser.add_argument('-t', dest='table', choices=['lineitem', 'customer',
-                                                 'orders', 'part', 'partsupp',
-                                                 'supplier', 'nation',
-                                                 'region'],
-                    required=True, help='target table name')
+parser.add_argument('-t', dest='table',
+                    help='target table name')
 args = parser.parse_args()
 
 kudu_master_hosts = [x.split(':')[0] for x in args.masters.split(',')]
@@ -239,32 +240,33 @@ kudu_master_ports = [x.split(':')[1] for x in args.masters.split(',')]
 # Connect to Kudu master server(s).
 client = kudu.connect(host=kudu_master_hosts, port=kudu_master_ports)
 
-k = args.table.upper()
-v = kudu_tpch_schema.DDS_DDL[k]
+for table in args.table.split(','):
+    k = table.upper()
+    v = kudu_tpch_schema.DDS_DDL[k]
 
-# Delete table if it already exists.
-if client.table_exists(k.lower()):
-    client.delete_table(k.lower())
+    # Delete table if it already exists.
+    if client.table_exists(k.lower()):
+        client.delete_table(k.lower())
 
-pk_column_names = [x[0].lower() for x in v
-                   if x[0] in reduce(lambda x, y: x + y,
-                                     kudu_tpch_schema.DDS_RI[k].values())]
-builder = kudu.schema_builder()
-for name, t, n, c, e, bs, d, _ in v:
-    builder.add_column(name.lower(), type_=t, nullable=n, compression=c,
-                       encoding=e) #, block_size=bs, default=d)
-builder.set_primary_keys(pk_column_names)
-schema = builder.build()
+    pk_column_names = [x[0].lower() for x in v
+                       if x[0] in reduce(lambda x, y: x + y,
+                                         kudu_tpch_schema.DDS_RI[k].values())]
+    builder = kudu.schema_builder()
+    for name, t, n, c, e, bs, d, _ in v:
+        builder.add_column(name.lower(), type_=t, nullable=n, compression=c,
+                           encoding=e) #, block_size=bs, default=d)
+    builder.set_primary_keys(pk_column_names)
+    schema = builder.build()
 
-# Define the partitioning schema.
-partitioning = Partitioning()
-for idx, cols in kudu_tpch_schema.DDS_RI[k].iteritems():
-    partitioning.add_hash_partitions(
-        column_names=map(lambda x: x.lower(), cols),
-        num_buckets=kudu_tpch_schema.NUM_BUCKETS[idx])
+    # Define the partitioning schema.
+    partitioning = Partitioning()
+    for idx, cols in kudu_tpch_schema.DDS_RI[k].iteritems():
+        partitioning.add_hash_partitions(
+            column_names=map(lambda x: x.lower(), cols),
+            num_buckets=kudu_tpch_schema.NUM_BUCKETS[idx])
 
-# Create a new table.
-client.create_table(k.lower(), schema, partitioning, n_replicas=3)
+    # Create a new table.
+    client.create_table(k.lower(), schema, partitioning, n_replicas=3)
 END
 }
 
@@ -273,11 +275,15 @@ CreateImpalaTable() {
     local hostport=${impalads[0]}
     impala-shell --quiet -i ${hostport} \
                  -q "create database if not exists ${TPCH_DATABASE}"
-    impala-shell --quiet -i ${hostport} -d ${TPCH_DATABASE} \
-                 -q "create external table ${TPCH_TABLE} stored as kudu \
-                     tblproperties( \
-                         'kudu.table_name' = '${TPCH_TABLE}', \
-                         'kudu.master_addresses' = '${TPCH_KMASTER}')"
+    IFS=',' read -r -a tables <<< "${TPCH_TABLE}"
+    for t in ${tables[@]}
+    do
+        impala-shell --quiet -i ${hostport} -d ${TPCH_DATABASE} \
+                     -q "create external table ${t} stored as kudu \
+                         tblproperties( \
+                             'kudu.table_name' = '${t}', \
+                             'kudu.master_addresses' = '${TPCH_KMASTER}')"
+    done
 }
 
 KuduPopulateTable() {
@@ -425,20 +431,21 @@ client = kudu.connect(host=kudu_master_hosts, port=kudu_master_ports)
 # Create a new session so that we can apply write operations.
 session = client.new_session(timeout_ms=60000)
 
-table = client.table(args.table)
-with open(args.filepath, 'rb') as f:
-    if args.verbose:
-        print "start %s" % args.filepath
-    rows = pickle.load(f)
-    for row in rows:
-        op = table.new_upsert(dict(row))
-        session.apply(op)
-    try:
-        session.flush()
-    except kudu.KuduBadStatus:
-        print(session.get_pending_errors())
-    if args.verbose:
-        print "finish %s" % args.filepath
+for table in args.table.split(','):
+    k = client.table(table)
+    with open(args.filepath, 'rb') as f:
+        if args.verbose:
+            print "start %s" % args.filepath
+        rows = pickle.load(f)
+        for row in rows:
+            op = k.new_upsert(dict(row))
+            session.apply(op)
+        try:
+            session.flush()
+        except kudu.KuduBadStatus:
+            print(session.get_pending_errors())
+        if args.verbose:
+            print "finish %s" % args.filepath
 END
 }
 
@@ -452,9 +459,13 @@ Repair() {
         flag="--verbose"
     fi
     IFS=',' read -r -a filepaths <<< "${TPCH_FILEPATH}"
-    for f in ${filepaths[@]}
+    IFS=',' read -r -a tables <<< "${TPCH_TABLE}"
+    for t in ${tables[@]}
     do
-        var+="${TPCH_KMASTER} ${TPCH_TABLE} ${flag} ${f} "
+        for f in ${filepaths[@]}
+        do
+            var+="${TPCH_KMASTER} ${t} ${flag} ${f} "
+        done
     done
     echo $var | xargs -n 4 -P ${TPCH_PROCS} sh -c 'KuduRepairTable ${1} ${2} ${3} ${4}' sh
 }
